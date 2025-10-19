@@ -1,0 +1,38 @@
+from pyspark.sql.functions import *
+source_df=spark.read.format('delta').load('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/bronze')
+dbServer = 'db-server1'
+dbPort = '1433'
+dbName = 'db_name1'
+databricksScope = 'project-scope'
+dbUser = dbutils.secrets.get(scope = databricksScope, key='username')
+dbPassword = dbutils.secrets.get(scope = databricksScope, key='password')
+connectionUrl ='jdbc:sqlserver://{}.database.windows.net:{};database={};user={};'.format(dbServer,dbPort, dbName, dbUser)
+connectionProperties = {
+'password': dbPassword,
+'driver':'com.microsoft.sqlserver.jdbc.SQLServerDriver'
+}
+validStatesDf = spark.read.jdbc(url = connectionUrl, table =
+'dbo.valid_states_lookup',
+properties = connectionProperties)
+validProductDf = spark.read.jdbc(url = connectionUrl, table =
+'dbo.Valid_Products',
+properties = connectionProperties)
+valid_states_list=validStatesDf.collect()
+valid_states=[row['StateCode'] for row in valid_states_list]
+valid_product_list=validProductDf.collect()
+valid_product=[row['ProductCode'] for row in valid_product_list]
+modified_df=source_df.withColumn('category',when((col('OrderID').isNotNull())&(col('CustomerID').isNotNull())&(col('OrderDate').isNotNull())&(col('Amount').isNotNull())&(col('state').isin(valid_states)&(col('ProductCode').isin(valid_product))),'Target').otherwise('Bad'))
+modified_df=modified_df.withColumn('error-type', when(col('OrderID').isNull(), 'Orderid is null')
+.otherwise(when(col('Amount').isNull(), 'amount is null')
+.otherwise(when(col('OrderDate').isNull(), 'orderdate is null')
+.otherwise(when(col('Amount').isNull(), 'amount is null')
+.otherwise(when(((~col('state').isin(valid_states))&(~col('ProductCode').isin(valid_product))), 'Invalid_state & invalid_product_code')
+.otherwise(when(~col('state').isin(valid_states), 'Invalid_state')
+.otherwise('invalid_product_code')
+))))))                                                                                                                                                                                                                                               
+
+modified_df.write.partitionBy('category').format('csv').mode('append').option('header',True).save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver')
+bad_data=modified_df.filter(col('category')=='Bad')
+error_summary_report=bad_data.groupBy('error-type').agg(count('OrderID').alias('error_count'))
+error_summary_report.write.format('csv').mode('append').option('header',True).save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/category=Bad/error_summary_report/')
+dbutils.fs.rm('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/source/files/',True)

@@ -1,0 +1,28 @@
+from pyspark.sql.functions import *
+from pyspark.sql import Window
+source_schema='OrderID int,CustomerID string,customer_first_name string,customer_last_name string,OrderDate string,Amount double,Currency string,State string,ProductCode string,product_name string,Category string,Price double'
+source_df=spark.read.format('csv').option('header',True).schema(source_schema).load('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/processed/')
+modified_df=source_df.withColumn('OrderDate',to_date('OrderDate','yyyy-MM-dd'))
+modified_df=modified_df.withColumn('Day',date_format('OrderDate','dd'))
+modified_df=modified_df.withColumn('Month',date_format('OrderDate','MM'))
+modified_df=modified_df.withColumn('Year',date_format('OrderDate','yyyy'))
+total_sale_day_df=modified_df.groupBy('Year','Month','Day').agg(round(sum('Amount'),2).alias('total_sale')).sort('Year','Month','Day')
+total_sales_product_df=modified_df.groupBy('ProductCode','product_name').agg(round(sum('Amount'),2).alias('Total_sales'))
+top_five_customers_df=modified_df.groupBy('CustomerID','customer_first_name','customer_last_name').agg(sum('Amount').alias('amount_spent')).orderBy('amount_spent',ascending=False).limit(5)
+windowSpec = Window.orderBy("OrderDate").rowsBetween(-6, 0)
+daily_sales_df = modified_df.groupBy("OrderDate").agg(sum("Amount").alias("total_sale"))
+moving_average_df = daily_sales_df.withColumn(
+    "row_count",
+    count("total_sale").over(windowSpec)
+).withColumn(
+    "moving_average_last_seven_days",
+    when(col("row_count")==7, avg("total_sale").over(windowSpec))
+    .otherwise(lit(0))
+).orderBy("OrderDate")
+total_sale_day_df.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/gold/total_Sales_per_day/')
+total_sales_product_df.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/gold/total_Sales_per_product/')
+top_five_customers_df.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/gold/total_five_customers/')
+moving_average_df.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/gold/moving_average_seven_days/')
+##dbutils.fs.rm('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/processed,True')
+
+

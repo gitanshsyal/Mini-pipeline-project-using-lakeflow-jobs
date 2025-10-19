@@ -1,0 +1,43 @@
+%sql
+drop  table if exists ingestion_status;
+
+-------------------------------------------------------------------
+%sql
+create table ingestion_status
+(status varchar(200),
+file_name varchar(250),
+time_stamp timestamp
+);
+
+---------------------------------------------------------------------
+from pyspark.sql.functions import *
+from datetime import datetime
+files=dbutils.fs.ls('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/source/files')
+final_df=None
+final_status_df=None
+status_schema='status string,file_name string,time_stamp timestamp'
+for file in files:
+  try:
+    file_format=file.name.split('.')[-1]
+    if file_format == 'csv':
+       schema='OrderID int,CustomerID string,FullName string,OrderDate string,Amount double,Currency string,ProductCode string,State string'
+       df = spark.read.format('csv').schema(schema).option('header','true').load(file.path)
+    elif file_format == 'json':
+       df = spark.read.format('json').load(file.path)
+    if final_df is None:
+        final_df=df
+    else:
+        final_df = final_df.unionByName(df, allowMissingColumns=True)
+    success_type='Success'
+  except Exception as e:
+      success_type='failed'
+  data=[(success_type, file.name, datetime.now())]
+  status_df=spark.createDataFrame(data=data, schema=status_schema)    
+  if final_status_df is None:
+     final_status_df=status_df
+  else:
+    final_status_df=final_status_df.union(status_df)
+final_df.write.format('delta').mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/bronze')
+final_status_df.write.format('delta').mode('append').saveAsTable('ingestion_status')
+display(final_df)    
+    

@@ -1,0 +1,42 @@
+from pyspark.sql.functions import *
+source_schema='OrderID int,CustomerID string,FullName string,OrderDate string,Amount double,Currency string,ProductCode string,State string'
+source_df=spark.read.format('csv').option('header',True).schema(source_schema).load('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/category=Target/')
+modified_df=source_df.withColumn('OrderDate',to_date('OrderDate','dd-MM-yyyy'))
+modified_df=modified_df.withColumn('OrderDate',date_format('OrderDate','yyyy-MM-dd'))
+modified_df=modified_df.withColumn('First_name',split('FullName',' ')[0])
+##modified_df=modified_df.withColumn('Last_name',concat_ws(' ',split(col('FullName'),' ').getItem(1),split(col('FullName'),' ').getItem(2)))
+modified_df = modified_df.withColumn(
+    'Last_name',concat_ws(' ',element_at(split(col('FullName'), ' '), -2),element_at(split(col('FullName'), ' '), -1))
+)
+total_count=modified_df.count()
+total_distant_order_count=modified_df.select('OrderID').distinct().count()
+modified_df.createOrReplaceTempView('modified_v')
+modified_df.select('OrderID').distinct().createOrReplaceTempView('distinct_v')
+if total_count==total_distant_order_count:
+    display('No duplicate rows')
+else:
+    non_unique_records=modified_df.groupBy('OrderID').agg(count('*').alias('total_count')).filter(col('total_count')>1)
+    non_unique_records.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/category=Bad/')
+dbServer = 'db-server1'
+dbPort = '1433'
+dbName = 'db_name1'
+databricksScope = 'project-scope'
+dbUser = dbutils.secrets.get(scope = databricksScope, key='username')
+dbPassword = dbutils.secrets.get(scope = databricksScope, key='password')
+connectionUrl ='jdbc:sqlserver://{}.database.windows.net:{};database={};user={};password={};'.format(dbServer,dbPort, dbName, dbUser, dbPassword)
+connectionProperties = {
+'password': dbPassword,
+'driver':'com.microsoft.sqlserver.jdbc.SQLServerDriver'
+}
+validProductDf = spark.read.jdbc(url = connectionUrl, table ='dbo.Valid_Products')
+modified_product_join_df=modified_df.join(validProductDf,modified_df.ProductCode==validProductDf.ProductCode,'inner')
+modified_product_join_df=modified_product_join_df.select(col('OrderID'),col('CustomerID'),col('First_name').alias('customer_first_name'),col('Last_name').alias('customer_last_name'),col('OrderDate'),col('Amount'),col('Currency'),col('State'),modified_df.ProductCode,
+lower(col('ProductName')).alias('product_name'),col('Category'),col('Price'))
+modified_product_join_df.write.format('csv').option('header',True).mode('append').save('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/processed/')
+##dbutils.fs.rm('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/category=Target/')
+##dbutils.fs.rm('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/category=Bad/')
+##dbutils.fs.rm('abfss://files@storageaccountrg12221.dfs.core.windows.net/catalog/target/silver/error_summary_report/')
+
+
+
+
